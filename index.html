@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A股情绪轮动终端 · 情绪日报</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0e14'/%3E%3Crect x='8' y='8' width='16' height='16' rx='4' fill='%23ff4d5e'/%3E%3Crect x='12' y='12' width='8' height='8' rx='2' fill='%23f5b942'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="wrap">
+  <nav class="topnav">
+    <a class="brand" href="/"><span class="logo"></span>A股情绪轮动终端</a>
+    <a href="/" class="active">情绪日报</a>
+    <a href="/dashboard">行业轮动</a>
+    <span class="sp">数据：东方财富 · 同花顺</span>
+  </nav>
+  <header>
+    <h1>情绪日报<span class="sub">龙虎榜 · 题材热点 · 行业轮动（动态实时版）</span></h1>
+    <div class="ctrls">
+      <input type="date" id="datePick">
+      <button id="todayBtn">今日(实时)</button>
+      <button id="refreshBtn">刷新</button>
+      <select id="autoSel" title="交易时段自动刷新间隔">
+        <option value="0">自动刷新：关</option>
+        <option value="30">每 30 秒</option>
+        <option value="60">每 1 分钟</option>
+        <option value="120">每 2 分钟</option>
+        <option value="300">每 5 分钟</option>
+      </select>
+      <span class="status" id="status">就绪</span>
+      <span class="status" id="autoStatus"></span>
+    </div>
+  </header>
+
+  <div class="cards" id="cards"></div>
+
+  <div id="body">
+    <div class="loading"><span class="spinner"></span>正在从接口实时抓取数据…</div>
+  </div>
+
+  <footer>
+    <div>数据来源：<b>东方财富龙虎榜</b>（datacenter RPT_DAILYBILLBOARD_DETAILSNEW）·
+      <b>同花顺热点</b>（zx.10jqka 当日强势股题材归因）·
+      <b>东方财富行业板块</b>（push2 行业涨跌排名）</div>
+    <div>本页为动态版本：打开时由本地服务 <code>app.py</code> 实时代理上述接口抓取，未内嵌任何静态数据；切换交易日、点「刷新」或开启「自动刷新」即重新实时抓取。
+      提示：<b>龙虎榜通常于交易日 16:00 后</b>公布，盘中请用「今日(实时)」看题材/行业轮动与涨停，或切到上一交易日看完整龙虎榜。交易日期：<b id="footDate">—</b>　数据生成时间：<b id="footTime">—</b></div>
+    <div class="mut">涨用红色、跌用绿色；金额单位 ¥（亿/万）。仅供复盘研究，不构成投资建议。</div>
+  </footer>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+window.__reload = () => load(true);
+
+// ---- 题材热度横向条形图 ----
+function themeChart(themes){
+  const W=720, rowH=24, padT=4, labelW=140, barMax=W-labelW-46;
+  const n=themes.length, H=padT+n*rowH+4;
+  const max=Math.max(...themes.map(t=>t.count),1);
+  let s=`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  themes.forEach((t,i)=>{
+    const y=padT+i*rowH, w=Math.max(2,(t.count/max)*barMax);
+    s+=`<text x="0" y="${y+15}" fill="#e6edf3" font-size="12">${esc(t.name)}</text>`;
+    s+=`<rect x="${labelW}" y="${y+4}" width="${w}" height="15" rx="3" fill="url(#g)"></rect>`;
+    s+=`<text x="${labelW+w+6}" y="${y+15}" fill="#f5b942" font-size="12">${t.count}</text>`;
+  });
+  s+=`<defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="#a9761f"/><stop offset="1" stop-color="#f5b942"/></linearGradient></defs>`;
+  s+=`</svg>`; return s;
+}
+
+function renderCards(ov){
+  const ht=ov.hottest_theme? ov.hottest_theme.name+' ('+ov.hottest_theme.count+')':'—';
+  const ti=ov.top_industry? ov.top_industry.name+' '+fmtPct(ov.top_industry.change_pct):'—';
+  const netTxt = ov.board_count>0 ? fmtMoney(ov.total_net_buy_wan) : '—';
+  const bcSub = ov.board_count>0 ? '家' : '（未公布）';
+  $('#cards').innerHTML=`
+    <div class="card"><div class="k">龙虎榜上榜家数</div><div class="v">${ov.board_count}<small>${bcSub}</small></div></div>
+    <div class="card"><div class="k">龙虎榜净买入合计</div><div class="v ${red(ov.total_net_buy_wan)}">${netTxt}</div></div>
+    <div class="card"><div class="k">最热题材</div><div class="v" style="color:var(--gold)">${ht}</div></div>
+    <div class="card"><div class="k">领涨行业</div><div class="v ${red(ov.top_industry?ov.top_industry.change_pct:0)}">${ti}</div></div>`;
+}
+
+function dragonTable(rows){
+  let h='<table><thead><tr><th class="l">排名</th><th class="l">代码</th><th class="l">名称</th>'
+    +'<th>涨跌幅</th><th>净买入</th><th>买入额</th><th>卖出额</th><th>换手率</th><th class="l">上榜原因</th></tr></thead><tbody>';
+  rows.forEach((s,i)=>{
+    h+=`<tr><td class="l mut">${i+1}</td><td class="l mut">${s.code}</td><td class="l">${esc(s.name)}</td>`
+      +`<td class="${red(s.change_pct)}">${fmtPct(s.change_pct)}</td>`
+      +`<td class="${red(s.net_buy_wan)}">${fmtMoney(s.net_buy_wan)}</td>`
+      +`<td class="mut">${fmtMoney(s.buy_wan)}</td>`
+      +`<td class="mut">${fmtMoney(s.sell_wan)}</td>`
+      +`<td class="mut">${s.turnover_pct==null?'—':s.turnover_pct.toFixed(2)+'%'}</td>`
+      +`<td class="l"><div class="reason" title="${esc(s.reason)}">${esc(s.reason)}</div></td></tr>`;
+  });
+  return h+'</tbody></table>';
+}
+
+function industryTable(rows){
+  let h='<table><thead><tr><th class="l">排名</th><th class="l">行业</th><th>涨跌幅</th>'
+    +'<th>上涨</th><th>下跌</th><th class="l">领涨股</th><th>领涨股涨</th><th>主力净流入</th></tr></thead><tbody>';
+  rows.forEach((r,i)=>{
+    h+=`<tr><td class="l mut">${i+1}</td><td class="l">${esc(r.name)}</td>`
+      +`<td class="${red(r.change_pct)}">${fmtPct(r.change_pct)}</td>`
+      +`<td class="mut">${r.up_count}</td><td class="mut">${r.down_count}</td>`
+      +`<td class="l">${esc(r.leader_name||'—')}</td>`
+      +`<td class="${red(r.leader_change)}">${fmtPct(r.leader_change)}</td>`
+      +`<td class="${red(r.main_net)}">${fmtMoney(r.main_net)}</td></tr>`;
+  });
+  return h+'</tbody></table>';
+}
+
+function greaterFirst(arr){return [...arr].sort((a,b)=>b.net_buy_wan-a.net_buy_wan);}
+function greatest(arr){return [...arr].sort((a,b)=>a.net_buy_wan-b.net_buy_wan);}
+
+function render(d){
+  $('#footDate').textContent=d.trade_date; $('#footTime').textContent=d.generated_at;
+  renderCards(d.overview);
+  const themeSvg=themeChart(d.themes.slice(0,15));
+  const indSvg=divergeChart(
+    d.industries.slice(0,12).map(x=>({name:x.name,v:x.change_pct}))
+    .concat(d.industries.slice(-12).reverse().map(x=>({name:x.name,v:x.change_pct}))),
+    'change');
+
+  const dragEmpty = d.dragon_tiger.length===0;
+  let dragSvgHtml;
+  if(dragEmpty){
+    dragSvgHtml='<div class="note">当日<b>龙虎榜尚未公布</b>（通常交易日 16:00 后出炉）。'
+      +'可点「<b>今日(实时)</b>」看盘中题材热度与行业轮动，或把日期切到<b>上一交易日</b>查看完整龙虎榜与净买入排名。</div>';
+  }else{
+    const drag=greaterFirst(d.dragon_tiger);
+    dragSvgHtml=divergeChart(
+      drag.slice(0,12).map(x=>({name:x.name,v:x.net_buy_wan}))
+      .concat(greatest(d.dragon_tiger).slice(0,12).map(x=>({name:x.name,v:x.net_buy_wan}))),
+      'money');
+  }
+  const dragonSection = dragEmpty? '' :
+    `<section>
+      <h2>龙虎榜全部上榜 <span class="tag">共 ${d.dragon_tiger.length} 家 · 按净买入降序</span></h2>
+      <div class="tbl-scroll">${dragonTable(d.dragon_tiger)}</div>
+    </section>`;
+
+  $('#body').innerHTML = `
+    <section>
+      <h2>题材热度 <span class="tag">同花顺当日强势股题材归因，按「+」拆分词频 · TOP ${Math.min(15,d.themes.length)}</span></h2>
+      ${themeSvg}
+    </section>
+    <div class="grid2">
+      <section>
+        <h2>行业涨跌榜 <span class="tag">东财行业板块 · 领涨/领跌各 12</span></h2>
+        <div class="legend"><span><i class="dot" style="background:var(--red)"></i>领涨(红)</span><span><i class="dot" style="background:var(--green)"></i>领跌(绿)</span></span></div>
+        ${indSvg}
+      </section>
+      <section>
+        <h2>龙虎榜净买入排名 <span class="tag">东方财富 · 净买/净卖各 12</span></h2>
+        <div class="legend"><span><i class="dot" style="background:var(--red)"></i>净买入(红)</span><span><i class="dot" style="background:var(--green)"></i>净卖出(绿)</span></span></div>
+        ${dragSvgHtml}
+      </section>
+    </div>
+    ${dragonSection}
+    <section>
+      <h2>行业板块全排名 <span class="tag">共 ${d.industries.length} 个 · 按涨跌幅降序</span></h2>
+      <div class="tbl-scroll">${industryTable(d.industries)}</div>
+    </section>`;
+}
+
+async function load(force){
+  force = force===true;
+  const btn=$('#refreshBtn'); btn.disabled=true;
+  const status=$('#status'); status.className='status'; status.textContent='抓取中…';
+  $('#body').innerHTML='<div class="loading"><span class="spinner"></span>正在从接口实时抓取数据…</div>';
+  const date=$('#datePick').value;
+  try{
+    const url='/api/snapshot?date='+encodeURIComponent(date)+(force?'&force=1':'');
+    const r=await fetch(url);
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
+    render(d);
+    const tag = (date===d.trade_date)?'':'（实际 '+d.trade_date+'）';
+    status.textContent='已更新 · '+d.generated_at+tag;
+  }catch(e){
+    status.className='status err'; status.textContent='失败：'+e.message;
+    $('#body').innerHTML='<div class="loading" style="color:var(--red)">抓取失败：'+e.message+'<br>请确认交易日期有数据，或稍后重试。</div>';
+  }finally{ btn.disabled=false; }
+}
+
+// 初始化
+(async function(){
+  let today=null;
+  try{
+    const r=await fetch('/api/latest'); const j=await r.json();
+    if(j.trade_date){ $('#datePick').value=j.trade_date; }
+    const t=await fetch('/api/today'); const tj=await t.json(); today=tj.trade_date;
+    if(today && $('#datePick').value===today){ $('#autoSel').value='30'; }
+  }catch(e){}
+  $('#datePick').addEventListener('change',()=>load(true));
+  $('#refreshBtn').addEventListener('click',()=>load(true));
+  $('#todayBtn').addEventListener('click',async ()=>{
+    try{ const r=await fetch('/api/today'); const j=await r.json();
+      if(j.trade_date){ $('#datePick').value=j.trade_date; load(true); } }
+    catch(e){ load(true); }
+  });
+  $('#autoSel').addEventListener('change',e=>startAuto(parseInt(e.target.value,10)));
+  if(today && $('#datePick').value===today){ startAuto(30); }  // 当日数据默认最小刷新(30s)
+  load(false);
+})();
+</script>
+</body>
+</html>

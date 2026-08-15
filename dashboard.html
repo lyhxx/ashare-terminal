@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A股情绪轮动终端 · 行业轮动</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0e14'/%3E%3Crect x='8' y='8' width='16' height='16' rx='4' fill='%23ff4d5e'/%3E%3Crect x='12' y='12' width='8' height='8' rx='2' fill='%23f5b942'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="wrap">
+  <nav class="topnav">
+    <a class="brand" href="/"><span class="logo"></span>A股情绪轮动终端</a>
+    <a href="/">情绪日报</a>
+    <a href="/dashboard" class="active">行业轮动</a>
+    <span class="sp">数据：东方财富 · 同花顺</span>
+  </nav>
+
+  <header>
+    <h1>行业轮动 &amp; 资金流向<span class="sub">实时监控 · 涨红跌绿</span></h1>
+    <div class="ctrls">
+      <button id="refreshBtn">刷新</button>
+      <select id="autoSel" title="自动刷新间隔（当日数据最小间隔）">
+        <option value="0">自动刷新：关</option>
+        <option value="30" selected>每 30 秒</option>
+        <option value="60">每 1 分钟</option>
+        <option value="120">每 2 分钟</option>
+        <option value="300">每 5 分钟</option>
+      </select>
+      <span class="status" id="status">就绪</span>
+      <span class="status" id="autoStatus"></span>
+    </div>
+  </header>
+
+  <div id="body">
+    <div class="loading"><span class="spinner"></span>正在实时抓取行情、资金流向与风格数据…</div>
+  </div>
+
+  <footer>
+    <div>数据来源：<b>东方财富</b>（实时行情：主要指数 / 国证风格指数 / 行业板块全量 / 沪深港通北向）· 行业主力净流入取自东财行业板块。</div>
+    <div>本页为动态实时版，打开即由 <code>app.py</code> 联网抓取，未内嵌静态数据；默认每 30 秒刷新（当日数据最小间隔）。北向盘中实时净买入自 2024-08-19 起已停披露，相关数值为最近可得口径，详见北向卡片说明。</div>
+    <div class="mut">涨用红色、跌用绿色；金额单位 ¥（亿/万）。本报告仅供研究参考，不构成个人投资建议。</div>
+  </footer>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+window.__reload = () => load(true);
+
+// 颜色混合（热力网格 / 风格卡）
+function mix(a,b,t){
+  const pa=parseInt(a.slice(1),16), pb=parseInt(b.slice(1),16);
+  const ar=(pa>>16)&255,ag=(pa>>8)&255,ab=pa&255;
+  const br=(pb>>16)&255,bg=(pb>>8)&255,bb=pb&255;
+  const r=Math.round(ar+(br-ar)*t),g=Math.round(ag+(bg-ag)*t),bl=Math.round(ab+(bb-ab)*t);
+  return `rgb(${r},${g},${bl})`;
+}
+function heatColor(pct){
+  if(pct==null) return '#1b2230';
+  const t=Math.min(Math.abs(pct)/3,1);
+  if(pct>0) return mix('#1b2230','#ff4d5e',t);
+  if(pct<0) return mix('#1b2230','#1fd18e',t);
+  return '#232c3b';
+}
+
+async function load(force){
+  force = force===true;
+  const btn=$('#refreshBtn'); btn.disabled=true;
+  const status=$('#status'); status.className='status'; status.textContent='抓取中…';
+  $('#body').innerHTML='<div class="loading"><span class="spinner"></span>正在实时抓取行情、资金流向与风格数据…</div>';
+  try{
+    const r=await fetch('/api/rotation'+(force?'?force=1':''));
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
+    render(d);
+    status.textContent='已更新 · '+d.generated_at;
+  }catch(e){
+    status.className='status err'; status.textContent='失败：'+e.message;
+    $('#body').innerHTML='<div class="loading" style="color:var(--red)">抓取失败：'+e.message+'<br>请稍后重试。</div>';
+  }finally{ btn.disabled=false; }
+}
+
+function render(d){
+  const idxHtml = d.indices.map(x=>`
+    <div class="idx">
+      <div class="n">${esc(x.name)}</div>
+      <div class="p">${x.price==null?'—':x.price.toFixed(2)}</div>
+      <div class="c ${red(x.change_pct)}">${fmtPct(x.change_pct)}</div>
+    </div>`).join('');
+
+  const ml = d.mainline;
+  const mlNet = ml.top_net.map((t,i)=>`
+    <div class="mlrow"><span class="rk">${i+1}</span>
+      <span class="nm">${esc(t.name)}</span>
+      <span class="nt pos">${fmtMoney(t.net_wan)} · ${fmtPct(t.change_pct)}</span></div>`).join('');
+  const mlGain = ml.top_gain.map(t=>`<span class="mut">${esc(t.name)} ${fmtPct(t.change_pct)}</span>`).join('　');
+
+  const heat = [...d.industries].filter(x=>x.change_pct!=null)
+    .sort((a,b)=>b.change_pct-a.change_pct)
+    .map(x=>`<div class="hcell" style="background:${heatColor(x.change_pct)}" title="${esc(x.name)} ${fmtPct(x.change_pct)}">
+        <div class="hn">${esc(x.name)}</div><div class="hp">${fmtPct(x.change_pct)}</div></div>`).join('');
+
+  const netRank = [...d.industries].filter(x=>x.main_net)
+    .sort((a,b)=>Math.abs(b.main_net)-Math.abs(a.main_net)).slice(0,15)
+    .map(x=>({name:x.name,v:x.main_net}));
+  const netSvg = divergeChart(netRank,'money');
+
+  const strong=d.style_strong, weak=d.style_weak;
+  const styleCells = d.styles.map(s=>{
+    const cls = (strong&&s.name===strong.name)?'scell strong':((weak&&s.name===weak.name)?'scell weak':'scell');
+    return `<div class="${cls}" style="background:${heatColor(s.change_pct)}">
+      <div class="sn">${esc(s.name)}</div><div class="sv">${fmtPct(s.change_pct)}</div></div>`;
+  }).join('');
+  const bias = strong&&weak ? `当前风格偏向 <b style="color:var(--gold)">${strong.name}</b>（${fmtPct(strong.change_pct)}）＞ ${weak.name}（${fmtPct(weak.change_pct)}）` : '风格数据暂缺';
+
+  const nb=d.northbound;
+  const nbVal = (nb.total_net_wan && Math.abs(nb.total_net_wan)>=1) ? fmtMoney(nb.total_net_wan) : '—';
+  const nbHtml = `
+    <div class="nb-head">
+      <span class="nb-val ${red(nb.total_net_wan)}">${nbVal}</span>
+      <span class="mut">北向当日净买入（最近可得 · ${nb.date||'—'}）</span>
+    </div>
+    <div class="nb-split">
+      <div>沪股通 <b class="${red(nb.sh_net_wan)}">${fmtMoney(nb.sh_net_wan)}</b></div>
+      <div>深股通 <b class="${red(nb.sz_net_wan)}">${fmtMoney(nb.sz_net_wan)}</b></div>
+    </div>
+    <div class="note">${esc(nb.note)}</div>`;
+
+  const judge = d.judgments.map(j=>`
+    <div class="judge"><div class="jt">${esc(j.tag)}</div><div class="jb">${esc(j.text)}</div></div>`).join('');
+
+  const br = d.breadth;
+  $('#body').innerHTML = `
+    <div class="grid4">${idxHtml}</div>
+
+    <div class="grid2">
+      <section>
+        <h2>今日资金主线 <span class="tag">行业主力净流入 Top3</span></h2>
+        <div class="ml">${mlNet}</div>
+        <div style="margin-top:10px" class="mut">涨幅前三：${mlGain}</div>
+      </section>
+      <section>
+        <h2>大盘广度 <span class="tag">行业涨跌家数</span></h2>
+        <div style="font-size:14px">上涨 <b class="pos">${br.up}</b> · 下跌 <b class="neg">${br.down}</b> · 共 ${br.total} 个行业</div>
+        <div style="margin:10px 0;height:14px;background:#1b2230;border-radius:7px;overflow:hidden">
+          <div style="height:100%;width:${br.pct}%;background:linear-gradient(90deg,#a9761f,#ff4d5e)"></div>
+        </div>
+        <div class="mut">赚钱效应 ${br.pct}%</div>
+        <div style="margin-top:12px" class="mut">北向资金动向见下方卡片。</div>
+      </section>
+    </div>
+
+    <section>
+      <h2>行业涨跌热力网格 <span class="tag">东财行业板块全量（约100细分）· 红涨绿跌，颜色越深幅度越大</span></h2>
+      <div class="heat">${heat}</div>
+    </section>
+
+    <div class="grid2">
+      <section>
+        <h2>主力资金行业净流入排行 <span class="tag">东财行业板块 · Top15（双向）</span></h2>
+        ${netSvg}
+      </section>
+      <section>
+        <h2>风格轮动强弱 <span class="tag">大盘/中盘/小盘 × 价值/成长</span></h2>
+        <div class="stylegrid">${styleCells}</div>
+        <div class="bias">${bias}</div>
+      </section>
+    </div>
+
+    <section>
+      <h2>北向资金动向 <span class="tag">东方财富沪深港通接口</span></h2>
+      ${nbHtml}
+    </section>
+
+    <section>
+      <h2>行业配置研判 <span class="tag">基于实时数据的分析判断（仅供参考）</span></h2>
+      ${judge}
+    </section>`;
+}
+
+// 初始化
+(async function(){
+  $('#refreshBtn').addEventListener('click',()=>load(true));
+  $('#autoSel').addEventListener('change',e=>startAuto(parseInt(e.target.value,10)));
+  startAuto(30);  // 当日数据默认最小刷新间隔(30s)
+  load(false);
+})();
+</script>
+</body>
+</html>
