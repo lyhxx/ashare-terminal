@@ -1,0 +1,28 @@
+# A股情绪轮动终端 —— Docker Compose 部署（唯一需要改的配置文件）
+#
+# 所有可调参数都在下面这个 service 里，改完直接：
+#   docker compose up -d --build
+# Dockerfile 无需再动。
+#
+# ── 常用修改 ─────────────────────────────────────────────
+# 1) 改访问端口：只改下面 ports 那一行的「左边」数字（宿主机端口）。
+#    例：想把外部访问改成 9000，改成 "9000:8000" 即可，容器内仍是 8000。
+#    若想连容器内端口也一起换，把 environment.PORT 也改成同一个数（左右须一致）。
+# 2) 调并发：改 GUNICORN_WORKERS / GUNICORN_THREADS。
+# 3) 时区已固定 Asia/Shanghai，无需改。
+# ────────────────────────────────────────────────────────
+services:
+  web:
+    build: .
+    image: ashare-terminal:latest
+    container_name: ashare-terminal
+    restart: unless-stopped
+
+    environment:
+      TZ: Asia/Shanghai          # 必须，A股按北京时间算"今日"
+      PORT: "8000"               # 容器内监听端口（ports 右边须与之相等）
+      GUNICORN_WORKERS: "2"      # gunicorn worker 进程数
+      GUNICORN_THREADS: "4"      # 每 worker 的线程数（抓取为 I/O 密集，线程并发更友好）
+
+    ports:
+      - "8000:8000"              # 宿主机端口:容器内端口
